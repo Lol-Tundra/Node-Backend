@@ -1,7 +1,7 @@
 {
   "name": "proxy-backend-hammerhead",
   "version": "1.0.0",
-  "description": "A powerful proxy server powered by testcafe-hammerhead.",
+  "description": "A powerful proxy server powered by an upgraded testcafe-hammerhead engine.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -10,7 +10,7 @@
   "license": "ISC",
   "dependencies": {
     "express": "^4.19.2",
-    "testcafe-hammerhead": "31.6.2",
+    "testcafe-hammerhead": "^35.0.0",
     "uuid": "^9.0.1"
   }
 }
