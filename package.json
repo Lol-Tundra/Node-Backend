@@ -10,7 +10,7 @@
   "license": "ISC",
   "dependencies": {
     "express": "^4.19.2",
-    "testcafe-hammerhead": "^31.6.2",
+    "testcafe-hammerhead": "31.6.2",
     "uuid": "^9.0.1"
   }
 }
