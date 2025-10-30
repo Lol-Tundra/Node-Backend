@@ -1,17 +1,18 @@
-const express = require('http');
+const express = require('express');
 const http = require('http');
-// Use a more robust import style for hammerhead
-const hammerhead = require('testcafe-hammerhead');
+const { Proxy, Session } = require('testcafe-hammerhead');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
+const server = http.createServer(app); // Create the HTTP server upfront
 const PORT = process.env.PORT || 3001;
 
 // --- Hammerhead Setup ---
-const proxy = new hammerhead.Proxy();
+const proxy = new Proxy();
 const sessions = new Map();
 
-// --- Middleware to handle the raw request body ---
+// --- Middleware for Raw Body ---
+// Hammerhead needs the raw request body to correctly handle POST requests.
 app.use((req, res, next) => {
     const body = [];
     req.on('data', chunk => body.push(chunk));
@@ -24,8 +25,13 @@ app.use((req, res, next) => {
 // --- API Route to create a new session ---
 app.get('/new-session', (req, res) => {
     const sessionId = uuidv4();
-    const session = new hammerhead.Session('/uploads/'); 
-    
+    // Modern Hammerhead requires an options object for the Session constructor.
+    const session = new Session('/uploads/', {
+        disablePageCaching: true,
+        allowMultipleWindows: false // Set to false for a simpler tab-based model
+    });
+
+    // These methods are required by Hammerhead's internal typings.
     session.getAuthCredentials = () => null;
     session.handleFileDownload = () => {};
 
@@ -35,42 +41,54 @@ app.get('/new-session', (req, res) => {
     res.json({ sessionId });
 });
 
-// --- The Core Proxy Route ---
-app.all('/proxy/:sessionId/*', async (req, res) => {
+// --- The Core HTTP Proxy Route ---
+app.all('/proxy/:sessionId/*', (req, res) => {
     const { sessionId } = req.params;
     const session = sessions.get(sessionId);
 
     if (!session) {
-        return res.status(404).send('Session not found or has expired. Please create a new tab.');
+        return res.status(404).send('Session not found. Please create a new tab.');
     }
 
-    const targetUrl = req.originalUrl.replace(`/proxy/${sessionId}/`, '');
+    const jobData = {
+        req: req,
+        res: res,
+        session: session,
+        isPage: !req.headers['x-requested-with'],
+        isAjax: !!req.headers['x-requested-with'],
+    };
+    
+    // The main method to process a standard HTTP request
+    proxy.request(jobData);
+});
 
-    try {
-        const jobData = {
-            req: req,
-            res: res,
-            session: session,
-            isPage: !req.headers['x-requested-with'],
-            isAjax: !!req.headers['x-requested-with'],
-        };
-        
-        proxy.request(jobData);
+// --- THE KEY FIX: WebSocket Upgrade Handler ---
+// This is what allows video players and live-chat sites to work.
+server.on('upgrade', (req, socket, head) => {
+    // Hammerhead identifies the session from the URL.
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const parts = url.pathname.split('/');
+    
+    // Expecting URL structure like: /proxy/SESSION_ID/ws...
+    if (parts[1] === 'proxy' && parts[2]) {
+        const sessionId = parts[2];
+        const session = sessions.get(sessionId);
 
-    } catch (error) {
-        console.error(`[Hammerhead Error] for ${targetUrl}:`, error);
-        if (!res.headersSent) {
-            res.status(500).send('An internal proxy error occurred.');
+        if (session) {
+            console.log(`Handling WebSocket upgrade for session: ${sessionId}`);
+            // This is the correct modern method to handle WebSockets.
+            session.handleUpgradeRequest(req, socket, head);
+        } else {
+            console.log('WebSocket upgrade for unknown session, destroying socket.');
+            socket.destroy();
         }
+    } else {
+        socket.destroy();
     }
 });
 
-// --- Server Setup ---
-const server = http.createServer(app);
 
-// NOTE: The proxy.attach method for WebSockets is removed to prevent the server from crashing.
-// This is a known limitation in this simplified setup.
-
+// --- Start the Server ---
 server.listen(PORT, () => {
-    console.log(`Hammerhead-powered proxy server is running on port ${PORT}`);
+    console.log(`Modern Hammerhead-powered proxy server is running on port ${PORT}`);
 });
