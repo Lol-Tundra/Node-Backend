@@ -1,4 +1,4 @@
-// A new, more powerful version of index.js that can handle video streaming
+// The definitive, video-capable version of index.js
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
@@ -7,7 +7,7 @@ const cheerio = require('cheerio');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// The client-side script remains the same, it's already doing its job.
+// The client-side script now also sends the page title for the tab system.
 const clientScript = [
     '(function() {',
     '    "use strict";',
@@ -15,11 +15,26 @@ const clientScript = [
     "    const urlParams = new URLSearchParams(window.location.search);",
     "    const targetUrlString = urlParams.get('url');",
     "    if (!targetUrlString) { return; }",
-    '    try {',
-    '        if (window.parent && window.parent !== window) {',
-    "            window.parent.postMessage({ type: 'proxyUrlUpdate', url: targetUrlString }, '*');",
+
+    '    function postParentMessage(message) {',
+    '        try {',
+    '            if (window.parent && window.parent !== window) {',
+    "                window.parent.postMessage(message, '*');",
+    '            }',
+    '        } catch (e) { console.error("Proxy script could not post message", e); }',
+    '    }',
+
+    "    postParentMessage({ type: 'proxyUrlUpdate', url: targetUrlString });",
+    
+    '    const observer = new MutationObserver(() => {',
+    '        if (document.title !== (window.proxyLastTitle || "")) {',
+    '            window.proxyLastTitle = document.title;',
+    "            postParentMessage({ type: 'proxyTitleUpdate', title: document.title });",
     '        }',
-    '    } catch (e) { console.error("Proxy script could not post message", e); }',
+    '    });',
+    '    const head = document.querySelector("head");',
+    '    if (head) { observer.observe(head, { childList: true, subtree: true }); }',
+
     "    const targetUrl = new URL(targetUrlString);",
     '    function rewriteUrl(url, base) {',
     "        if (!url || url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('javascript:')) { return url; }",
@@ -74,40 +89,46 @@ app.get('/proxy', async (req, res) => {
             'Accept': req.headers['accept'] || '*/*',
             'Referer': new URL(targetUrl).origin,
         };
-        // Forward range headers for video streaming
         if (req.headers.range) {
             requestHeaders.range = req.headers.range;
+        }
+        if (req.headers.cookie) {
+            requestHeaders.cookie = req.headers.cookie;
         }
 
         const response = await axios.get(targetUrl, {
             responseType: 'arraybuffer',
-            validateStatus: () => true, // Handle all status codes ourselves
+            validateStatus: () => true,
             headers: requestHeaders,
         });
 
-        // Clean up and forward response headers
+        // Aggressively strip security headers and manage cookies
         const headersToForward = {};
-        const allowedHeaders = ['content-type', 'content-length', 'accept-ranges', 'content-range', 'date', 'last-modified'];
         for (const header in response.headers) {
-            if (allowedHeaders.includes(header.toLowerCase())) {
+            const lowerHeader = header.toLowerCase();
+            const headersToRemove = ['content-security-policy', 'x-frame-options', 'strict-transport-security', 'content-security-policy-report-only', 'x-content-type-options', 'cross-origin-embedder-policy', 'cross-origin-opener-policy', 'cross-origin-resource-policy'];
+            if (!headersToRemove.includes(lowerHeader)) {
                 headersToForward[header] = response.headers[header];
             }
         }
+
+        // Rewrite Set-Cookie headers
+        if (headersToForward['set-cookie']) {
+            const cookies = Array.isArray(headersToForward['set-cookie']) ? headersToForward['set-cookie'] : [headersToForward['set-cookie']];
+            headersToForward['set-cookie'] = cookies.map(cookie => cookie.replace(/domain=[^;]+;?/gi, '').replace(/SameSite=None/gi, 'SameSite=Lax'));
+        }
         
-        // Add our own permissive CORS headers
         headersToForward['Access-Control-Allow-Origin'] = '*';
 
-        // Handle redirects
-        if (response.status >= 300 && response.status < 400 && response.headers.location) {
-            const redirectUrl = new URL(response.headers.location, targetUrl).href;
+        if (response.status >= 300 && response.status < 400 && headersToForward.location) {
+            const redirectUrl = new URL(headersToForward.location, targetUrl).href;
             const proxiedRedirectUrl = 'https://' + req.get('host') + '/proxy?url=' + encodeURIComponent(redirectUrl);
             res.setHeader('Location', proxiedRedirectUrl);
             res.status(response.status).send();
             return;
         }
         
-        res.set(headersToForward);
-        res.status(response.status);
+        res.status(response.status).set(headersToForward);
 
         const contentType = response.headers['content-type'] || '';
         const host = req.get('host');
@@ -148,5 +169,5 @@ app.get('/proxy', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log('Video-capable proxy server is running on port ' + PORT);
+    console.log('Advanced proxy server with robust cookie/header handling is running on port ' + PORT);
 });
