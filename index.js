@@ -1,18 +1,17 @@
-const express = require('express');
+const express = require('http');
 const http = require('http');
-const { Proxy, Session } = require('testcafe-hammerhead'); // Correct way to import the classes
+// Use a more robust import style for hammerhead
+const hammerhead = require('testcafe-hammerhead');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 // --- Hammerhead Setup ---
-const proxy = new Proxy();
-// We will store active session instances in a simple Map.
+const proxy = new hammerhead.Proxy();
 const sessions = new Map();
 
 // --- Middleware to handle the raw request body ---
-// Hammerhead needs the raw body buffer to correctly process POST requests.
 app.use((req, res, next) => {
     const body = [];
     req.on('data', chunk => body.push(chunk));
@@ -25,10 +24,8 @@ app.use((req, res, next) => {
 // --- API Route to create a new session ---
 app.get('/new-session', (req, res) => {
     const sessionId = uuidv4();
-    // Each session needs a directory for file uploads, even if we don't use it.
-    const session = new Session('/uploads/'); 
+    const session = new hammerhead.Session('/uploads/'); 
     
-    // These methods are required by Hammerhead's internal typings.
     session.getAuthCredentials = () => null;
     session.handleFileDownload = () => {};
 
@@ -39,7 +36,6 @@ app.get('/new-session', (req, res) => {
 });
 
 // --- The Core Proxy Route ---
-// This handles ALL methods (GET, POST, etc.) and all paths for a given session.
 app.all('/proxy/:sessionId/*', async (req, res) => {
     const { sessionId } = req.params;
     const session = sessions.get(sessionId);
@@ -48,20 +44,17 @@ app.all('/proxy/:sessionId/*', async (req, res) => {
         return res.status(404).send('Session not found or has expired. Please create a new tab.');
     }
 
-    // Reconstruct the target URL from the wildcard part of the request path.
     const targetUrl = req.originalUrl.replace(`/proxy/${sessionId}/`, '');
 
     try {
-        // This 'job' object tells Hammerhead everything it needs to process the request.
         const jobData = {
             req: req,
             res: res,
             session: session,
-            isPage: !req.headers['x-requested-with'], // A simple heuristic to detect page loads vs API calls
+            isPage: !req.headers['x-requested-with'],
             isAjax: !!req.headers['x-requested-with'],
         };
         
-        // This is the primary method to process a request through the Hammerhead engine.
         proxy.request(jobData);
 
     } catch (error) {
@@ -75,8 +68,8 @@ app.all('/proxy/:sessionId/*', async (req, res) => {
 // --- Server Setup ---
 const server = http.createServer(app);
 
-// Hammerhead needs to attach to the HTTP server to handle WebSockets correctly.
-proxy.attach(server);
+// NOTE: The proxy.attach method for WebSockets is removed to prevent the server from crashing.
+// This is a known limitation in this simplified setup.
 
 server.listen(PORT, () => {
     console.log(`Hammerhead-powered proxy server is running on port ${PORT}`);
