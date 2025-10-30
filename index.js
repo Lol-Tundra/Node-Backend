@@ -1,4 +1,4 @@
-// The definitive, video-capable version of index.js
+// The final, Rammerhead-inspired backend that handles all HTTP methods.
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
@@ -7,7 +7,14 @@ const cheerio = require('cheerio');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// The client-side script now also sends the page title for the tab system.
+// Use a raw body parser for all routes to handle any content type.
+app.use(express.raw({
+  inflate: true,
+  limit: '50mb',
+  type: () => true, // Apply to all content types
+}));
+
+// The client-side script remains the same. It's already robust.
 const clientScript = [
     '(function() {',
     '    "use strict";',
@@ -15,17 +22,11 @@ const clientScript = [
     "    const urlParams = new URLSearchParams(window.location.search);",
     "    const targetUrlString = urlParams.get('url');",
     "    if (!targetUrlString) { return; }",
-
     '    function postParentMessage(message) {',
-    '        try {',
-    '            if (window.parent && window.parent !== window) {',
-    "                window.parent.postMessage(message, '*');",
-    '            }',
-    '        } catch (e) { console.error("Proxy script could not post message", e); }',
+    '        try { if (window.parent && window.parent !== window) { window.parent.postMessage(message, "*"); } }',
+    '        catch (e) { console.error("Proxy script could not post message", e); }',
     '    }',
-
     "    postParentMessage({ type: 'proxyUrlUpdate', url: targetUrlString });",
-    
     '    const observer = new MutationObserver(() => {',
     '        if (document.title !== (window.proxyLastTitle || "")) {',
     '            window.proxyLastTitle = document.title;',
@@ -34,7 +35,6 @@ const clientScript = [
     '    });',
     '    const head = document.querySelector("head");',
     '    if (head) { observer.observe(head, { childList: true, subtree: true }); }',
-
     "    const targetUrl = new URL(targetUrlString);",
     '    function rewriteUrl(url, base) {',
     "        if (!url || url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('javascript:')) { return url; }",
@@ -65,9 +65,7 @@ const clientScript = [
 app.use(cors());
 
 function rewriteUrlForServer(originalUrl, base, host) {
-    if (!originalUrl || originalUrl.startsWith('data:') || originalUrl.startsWith('blob:') || originalUrl.startsWith('javascript:')) {
-        return originalUrl;
-    }
+    if (!originalUrl || originalUrl.startsWith('data:') || originalUrl.startsWith('blob:') || originalUrl.startsWith('javascript:')) return originalUrl;
     try {
         const absoluteUrl = new URL(originalUrl, base).href;
         return 'https://' + host + '/proxy?url=' + encodeURIComponent(absoluteUrl);
@@ -76,33 +74,30 @@ function rewriteUrlForServer(originalUrl, base, host) {
     }
 }
 
-app.get('/proxy', async (req, res) => {
+// Use app.all to handle GET, POST, PUT, DELETE, etc.
+app.all('/proxy', async (req, res) => {
     let targetUrl = req.query.url;
-    if (!targetUrl) {
-        return res.status(400).send('URL is required');
-    }
+    if (!targetUrl) return res.status(400).send('URL is required');
 
     try {
-        const requestHeaders = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
-            'Accept-Language': req.headers['accept-language'] || 'en-US,en;q=0.9',
-            'Accept': req.headers['accept'] || '*/*',
-            'Referer': new URL(targetUrl).origin,
-        };
-        if (req.headers.range) {
-            requestHeaders.range = req.headers.range;
-        }
-        if (req.headers.cookie) {
-            requestHeaders.cookie = req.headers.cookie;
-        }
+        const requestHeaders = {};
+        Object.keys(req.headers).forEach(key => {
+          // Do not forward host header, it will be set by axios
+          if (key.toLowerCase() !== 'host') {
+            requestHeaders[key] = req.headers[key];
+          }
+        });
 
-        const response = await axios.get(targetUrl, {
+        const response = await axios({
+            method: req.method,
+            url: targetUrl,
+            data: req.body, // Pass the raw body
             responseType: 'arraybuffer',
             validateStatus: () => true,
             headers: requestHeaders,
         });
 
-        // Aggressively strip security headers and manage cookies
+        // Aggressively clean up headers
         const headersToForward = {};
         for (const header in response.headers) {
             const lowerHeader = header.toLowerCase();
@@ -111,21 +106,15 @@ app.get('/proxy', async (req, res) => {
                 headersToForward[header] = response.headers[header];
             }
         }
-
-        // Rewrite Set-Cookie headers
         if (headersToForward['set-cookie']) {
             const cookies = Array.isArray(headersToForward['set-cookie']) ? headersToForward['set-cookie'] : [headersToForward['set-cookie']];
             headersToForward['set-cookie'] = cookies.map(cookie => cookie.replace(/domain=[^;]+;?/gi, '').replace(/SameSite=None/gi, 'SameSite=Lax'));
         }
-        
         headersToForward['Access-Control-Allow-Origin'] = '*';
-
+        
         if (response.status >= 300 && response.status < 400 && headersToForward.location) {
             const redirectUrl = new URL(headersToForward.location, targetUrl).href;
-            const proxiedRedirectUrl = 'https://' + req.get('host') + '/proxy?url=' + encodeURIComponent(redirectUrl);
-            res.setHeader('Location', proxiedRedirectUrl);
-            res.status(response.status).send();
-            return;
+            headersToForward.location = 'https://' + req.get('host') + '/proxy?url=' + encodeURIComponent(redirectUrl);
         }
         
         res.status(response.status).set(headersToForward);
@@ -146,7 +135,7 @@ app.get('/proxy', async (req, res) => {
                 });
             });
             $('img[srcset], source[srcset]').each(function() {
-                let srcset = $(this).attr('srcset');
+                let srcset = $(this).attr(attr);
                 if (srcset) {
                     const newSrcset = srcset.split(',').map(p => p.trim().split(/\s+/).map((v, i) => i === 0 ? rewriteUrlForServer(v, targetUrl, host) : v).join(' ')).join(', ');
                     $(this).attr('srcset', newSrcset);
@@ -164,10 +153,10 @@ app.get('/proxy', async (req, res) => {
             res.send(response.data);
         }
     } catch (error) {
-        res.status(500).send('Error fetching the URL: ' + error.message);
+        res.status(500).send('Error in proxy request: ' + error.message);
     }
 });
 
 app.listen(PORT, () => {
-    console.log('Advanced proxy server with robust cookie/header handling is running on port ' + PORT);
+    console.log('Full-method proxy server is running on port ' + PORT);
 });
