@@ -1,4 +1,4 @@
-// A new, smarter version of index.js that enables URL syncing
+// A new, more powerful version of index.js that can handle video streaming
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
@@ -7,7 +7,7 @@ const cheerio = require('cheerio');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// This client-side script now sends a message to the parent window to update the URL bar.
+// The client-side script remains the same, it's already doing its job.
 const clientScript = [
     '(function() {',
     '    "use strict";',
@@ -47,7 +47,6 @@ const clientScript = [
     '})();'
 ].join('');
 
-
 app.use(cors());
 
 function rewriteUrlForServer(originalUrl, base, host) {
@@ -69,11 +68,46 @@ app.get('/proxy', async (req, res) => {
     }
 
     try {
+        const requestHeaders = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+            'Accept-Language': req.headers['accept-language'] || 'en-US,en;q=0.9',
+            'Accept': req.headers['accept'] || '*/*',
+            'Referer': new URL(targetUrl).origin,
+        };
+        // Forward range headers for video streaming
+        if (req.headers.range) {
+            requestHeaders.range = req.headers.range;
+        }
+
         const response = await axios.get(targetUrl, {
             responseType: 'arraybuffer',
-            validateStatus: status => status < 500,
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36' }
+            validateStatus: () => true, // Handle all status codes ourselves
+            headers: requestHeaders,
         });
+
+        // Clean up and forward response headers
+        const headersToForward = {};
+        const allowedHeaders = ['content-type', 'content-length', 'accept-ranges', 'content-range', 'date', 'last-modified'];
+        for (const header in response.headers) {
+            if (allowedHeaders.includes(header.toLowerCase())) {
+                headersToForward[header] = response.headers[header];
+            }
+        }
+        
+        // Add our own permissive CORS headers
+        headersToForward['Access-Control-Allow-Origin'] = '*';
+
+        // Handle redirects
+        if (response.status >= 300 && response.status < 400 && response.headers.location) {
+            const redirectUrl = new URL(response.headers.location, targetUrl).href;
+            const proxiedRedirectUrl = 'https://' + req.get('host') + '/proxy?url=' + encodeURIComponent(redirectUrl);
+            res.setHeader('Location', proxiedRedirectUrl);
+            res.status(response.status).send();
+            return;
+        }
+        
+        res.set(headersToForward);
+        res.status(response.status);
 
         const contentType = response.headers['content-type'] || '';
         const host = req.get('host');
@@ -81,32 +115,22 @@ app.get('/proxy', async (req, res) => {
         if (contentType.includes('text/html')) {
             let html = Buffer.from(response.data).toString('utf-8');
             const $ = cheerio.load(html);
-
             const injectedScript = clientScript.replace('__PROXY_HOST__', host);
             $('head').prepend('<script>' + injectedScript + '</script>');
             $('head').prepend('<base href="' + targetUrl + '">');
-
             ['href', 'src', 'action', 'data'].forEach(attr => {
                 $('[' + attr + ']').each(function() {
-                    const originalUrl = $(this).attr(attr);
-                    if (originalUrl) {
-                        const newUrl = rewriteUrlForServer(originalUrl, targetUrl, host);
-                        $(this).attr(attr, newUrl);
-                    }
+                    const val = $(this).attr(attr);
+                    if (val) $(this).attr(attr, rewriteUrlForServer(val, targetUrl, host));
                 });
             });
-
             $('img[srcset], source[srcset]').each(function() {
                 let srcset = $(this).attr('srcset');
                 if (srcset) {
-                    const newSrcset = srcset.split(',').map(part => {
-                        const [url, descriptor] = part.trim().split(/\s+/);
-                        return rewriteUrlForServer(url, targetUrl, host) + ' ' + (descriptor || '');
-                    }).join(', ');
+                    const newSrcset = srcset.split(',').map(p => p.trim().split(/\s+/).map((v, i) => i === 0 ? rewriteUrlForServer(v, targetUrl, host) : v).join(' ')).join(', ');
                     $(this).attr('srcset', newSrcset);
                 }
             });
-
             res.send($.html());
         } else if (contentType.includes('text/css')) {
             let css = Buffer.from(response.data).toString('utf-8');
@@ -114,7 +138,7 @@ app.get('/proxy', async (req, res) => {
                  const cleanedUrl = url.replace(/['"]/g, '');
                  return 'url(' + rewriteUrlForServer(cleanedUrl, targetUrl, host) + ')';
             });
-            res.type('text/css').send(rewrittenCss);
+            res.send(rewrittenCss);
         } else {
             res.send(response.data);
         }
@@ -124,5 +148,5 @@ app.get('/proxy', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log('Advanced proxy server is running on port ' + PORT);
+    console.log('Video-capable proxy server is running on port ' + PORT);
 });
