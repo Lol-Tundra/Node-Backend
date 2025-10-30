@@ -1,4 +1,4 @@
-// A new, safer version of index.js using only single quotes for strings
+// A new, smarter version of index.js that enables URL syncing
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
@@ -7,12 +7,20 @@ const cheerio = require('cheerio');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// This is the client-side "agent" script that will be injected into pages.
+// This client-side script now sends a message to the parent window to update the URL bar.
 const clientScript = [
     '(function() {',
     '    "use strict";',
     "    const PROXY_HOST = 'https://__PROXY_HOST__';",
-    "    const targetUrl = new URL(location.search.split('url=')[1]);",
+    "    const urlParams = new URLSearchParams(window.location.search);",
+    "    const targetUrlString = urlParams.get('url');",
+    "    if (!targetUrlString) { return; }",
+    '    try {',
+    '        if (window.parent && window.parent !== window) {',
+    "            window.parent.postMessage({ type: 'proxyUrlUpdate', url: targetUrlString }, '*');",
+    '        }',
+    '    } catch (e) { console.error("Proxy script could not post message", e); }',
+    "    const targetUrl = new URL(targetUrlString);",
     '    function rewriteUrl(url, base) {',
     "        if (!url || url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('javascript:')) { return url; }",
     '        try {',
