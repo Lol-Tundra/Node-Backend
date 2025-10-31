@@ -23,10 +23,41 @@ app.use((req, res, next) => {
 const proxy = new Proxy();
 const sessions = new Map();
 
+// --- Client Script for Communicating with the UI ---
+// This script is injected into every proxied page by Hammerhead.
+const clientScript = [
+    '(function() {',
+    '    "use strict";',
+    '    function postParentMessage(message) {',
+    '        try { if (window.parent && window.parent !== window) { window.parent.postMessage(message, "*"); } }',
+    '        catch (e) { console.error("Proxy script could not post message", e); }',
+    '    }',
+    '    const findFavicon = () => {',
+    '        let favicon = document.querySelector("link[rel~=\'icon\']");',
+    '        if (favicon) return new URL(favicon.href, document.baseURI).href;',
+    '        return new URL("/favicon.ico", document.baseURI).href;',
+    '    };',
+    '    const sendUpdate = () => {',
+    "        postParentMessage({ type: 'proxyUpdate', url: location.href, title: document.title, favicon: findFavicon() });",
+    '    };',
+    '    const observer = new MutationObserver(() => {',
+    '        if (document.title !== (window.proxyLastTitle || "")) {',
+    '            window.proxyLastTitle = document.title;',
+    '            sendUpdate();',
+    '        }',
+    '    });',
+    '    const head = document.querySelector("head");',
+    '    if (head) { observer.observe(head, { childList: true, subtree: true }); }',
+    "    window.addEventListener('load', () => setTimeout(sendUpdate, 50));",
+    '})();'
+].join('');
+
 // --- API Route to create a new session ---
 app.get('/new-session', (req, res) => {
     const sessionId = uuidv4();
     const session = new Session('/uploads/');
+    // Inject our communication script into every page this session loads
+    session.injectable.scripts.push(clientScript);
     session.getAuthCredentials = () => null;
     session.handleFileDownload = () => {};
     sessions.set(sessionId, session);
@@ -35,32 +66,26 @@ app.get('/new-session', (req, res) => {
 });
 
 // --- The Core Proxy Route ---
-// This now correctly prefixes the target URL with the session ID for Hammerhead.
-app.all(`/${proxy.options.prefix}*`, (req, res) => {
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const sessionId = url.pathname.split('/')[1];
+// This route now correctly handles the /{sessionId}/{url} pattern.
+app.all('/:sessionId/*', (req, res) => {
+    const { sessionId } = req.params;
     const session = sessions.get(sessionId);
 
     if (session) {
         const jobData = { req, res, session };
         proxy.request(jobData);
     } else {
-        res.status(404).send('Session not found.');
+        res.status(404).send('Session not found. Please create a new tab.');
     }
 });
-
 
 // --- WebSocket Upgrade Handler ---
 server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const sessionId = url.pathname.split('/')[1];
     const session = sessions.get(sessionId);
-
-    if (session) {
-        session.handleUpgradeRequest(req, socket, head);
-    } else {
-        socket.destroy();
-    }
+    if (session) session.handleUpgradeRequest(req, socket, head);
+    else socket.destroy();
 });
 
 // --- Start the Server ---
