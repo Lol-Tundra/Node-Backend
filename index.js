@@ -1,94 +1,55 @@
-const express = require('express');
-const http = require('http');
-const cors = require('cors');
-const { Proxy, Session } = require('testcafe-hammerhead');
-const { v4: uuidv4 } = require('uuid');
+// server.js
+// This file sets up a simple Node.js backend using Express.
+// It is designed to be deployed on a service like Render.
+
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+
+// Load environment variables (not strictly necessary for this simple example, but good practice)
+dotenv.config();
 
 const app = express();
-const server = http.createServer(app);
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3000;
 
-// --- Middleware ---
-app.use(cors());
-app.use((req, res, next) => {
-    const body = [];
-    req.on('data', chunk => body.push(chunk));
-    req.on('end', () => {
-        req.body = Buffer.concat(body);
-        next();
+// Middleware Setup
+// 1. CORS: Allows your GitHub Pages frontend to make requests to this server.
+//    In a real application, you should restrict the origin to only your GitHub Pages URL.
+app.use(cors({
+    origin: '*', // Allowing all origins for easy testing. Replace '*' with your GitHub Pages URL later.
+    methods: 'GET'
+}));
+
+// 2. Body Parser (for future POST requests)
+app.use(express.json());
+
+// --- API Endpoint ---
+/**
+ * GET /api/message
+ * Responds with a greeting, optionally including a name query parameter.
+ * Example: /api/message?name=Alice
+ */
+app.get('/api/message', (req, res) => {
+    const name = req.query.name || 'Guest';
+
+    // The backend logic: generate a personalized message
+    const message = `Hello, ${name}! This message came directly from your Node.js backend hosted on Render.`;
+
+    res.json({
+        greeting: message,
+        timestamp: new Date().toISOString()
     });
 });
 
-// --- Hammerhead Setup ---
-const proxy = new Proxy();
-const sessions = new Map();
-
-// --- Client Script for Communicating with the UI ---
-// This script is injected into every proxied page by Hammerhead.
-const clientScript = [
-    '(function() {',
-    '    "use strict";',
-    '    function postParentMessage(message) {',
-    '        try { if (window.parent && window.parent !== window) { window.parent.postMessage(message, "*"); } }',
-    '        catch (e) { console.error("Proxy script could not post message", e); }',
-    '    }',
-    '    const findFavicon = () => {',
-    '        let favicon = document.querySelector("link[rel~=\'icon\']");',
-    '        if (favicon) return new URL(favicon.href, document.baseURI).href;',
-    '        return new URL("/favicon.ico", document.baseURI).href;',
-    '    };',
-    '    const sendUpdate = () => {',
-    "        postParentMessage({ type: 'proxyUpdate', url: location.href, title: document.title, favicon: findFavicon() });",
-    '    };',
-    '    const observer = new MutationObserver(() => {',
-    '        if (document.title !== (window.proxyLastTitle || "")) {',
-    '            window.proxyLastTitle = document.title;',
-    '            sendUpdate();',
-    '        }',
-    '    });',
-    '    const head = document.querySelector("head");',
-    '    if (head) { observer.observe(head, { childList: true, subtree: true }); }',
-    "    window.addEventListener('load', () => setTimeout(sendUpdate, 50));",
-    '})();'
-].join('');
-
-// --- API Route to create a new session ---
-app.get('/new-session', (req, res) => {
-    const sessionId = uuidv4();
-    const session = new Session('/uploads/');
-    // Inject our communication script into every page this session loads
-    session.injectable.scripts.push(clientScript);
-    session.getAuthCredentials = () => null;
-    session.handleFileDownload = () => {};
-    sessions.set(sessionId, session);
-    console.log(`Created new session: ${sessionId}`);
-    res.json({ sessionId });
+// Basic root route for verification
+app.get('/', (req, res) => {
+    res.send('Server is running! Access the API at /api/message');
 });
 
-// --- The Core Proxy Route ---
-// This route now correctly handles the /{sessionId}/{url} pattern.
-app.all('/:sessionId/*', (req, res) => {
-    const { sessionId } = req.params;
-    const session = sessions.get(sessionId);
 
-    if (session) {
-        const jobData = { req, res, session };
-        proxy.request(jobData);
-    } else {
-        res.status(404).send('Session not found. Please create a new tab.');
-    }
+// Start the server
+app.listen(PORT, () => {
+    console.log(`Server listening on port ${PORT}`);
 });
 
-// --- WebSocket Upgrade Handler ---
-server.on('upgrade', (req, socket, head) => {
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const sessionId = url.pathname.split('/')[1];
-    const session = sessions.get(sessionId);
-    if (session) session.handleUpgradeRequest(req, socket, head);
-    else socket.destroy();
-});
-
-// --- Start the Server ---
-server.listen(PORT, () => {
-    console.log(`Rammerhead-style proxy server is running on port ${PORT}`);
-});
+// Reminder: You will need to install 'express', 'cors', and 'dotenv'.
